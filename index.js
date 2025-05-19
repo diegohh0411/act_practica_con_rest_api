@@ -1,81 +1,73 @@
 
 
 
-require('dotenv').config(); 
-const express = require('express');
-const mysql = require('mysql2/promise'); 
-const cors = require('cors');           
-const morgan = require('morgan');       
-const SHA256 = require('crypto-js/sha256'); 
-
+import 'dotenv/config';
+import express, { json } from 'express';
+import { createPool } from 'mysql2/promise';
+import cors from 'cors';
+import morgan from 'morgan';
+import { hashSync, compareSync } from 'bcrypt';
 
 const app = express();
-const port = process.env.API_PORT || 3000; 
+const port = process.env.API_PORT || 3000;
 
+app.use(cors());
+app.use(morgan('dev'));
+app.use(json());
 
-app.use(cors()); 
-app.use(morgan('dev')); 
-app.use(express.json()); 
-
-
-const pool = mysql.createPool({
+const pool = createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_DATABASE,
   waitForConnections: true,
-  connectionLimit: 10, 
+  connectionLimit: 10,
   queueLimit: 0
 });
 
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INT AUTO_INCREMENT PRIMARY KEY, 
+    name VARCHAR(255) NOT NULL, 
+    email VARCHAR(255) NOT NULL UNIQUE, 
+    password_hash VARCHAR(255) NOT NULL, 
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )
+`);
 
 pool.getConnection()
   .then(connection => {
     console.log('Database connected successfully!');
-    connection.release(); 
+    connection.release();
   })
   .catch(err => {
     console.error('Error connecting to database:', err.message);
-    
+
     process.exit(1);
   });
-
-
-
-function hashPassword(password) {
-    
-    
-    return SHA256(password + process.env.SECRET_KEY).toString();
-}
-
-
-
 
 app.get('/', (req, res) => {
   res.send('Hello World! Welcome to the API.');
 });
 
 app.get('/marco', (req, res) => {
-  res.send('polo'); 
+  res.send('polo');
 });
 
 app.get('/ping', (req, res) => {
-  
+
   pool.query('SELECT 1')
     .then(() => {
       res.json({ message: 'pong', database_status: 'connected' });
     })
     .catch(err => {
-      res.status(503).json({ message: 'pong', database_status: 'error', error: err.message }); 
+      res.status(503).json({ message: 'pong', database_status: 'error', error: err.message });
     });
 });
 
-
-
-
 app.get('/users', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT id, name, email, created_at FROM users'); 
+    const [rows] = await pool.query('SELECT * FROM users');
     res.json(rows);
   } catch (error) {
     console.error("Error fetching users:", error);
@@ -83,11 +75,10 @@ app.get('/users', async (req, res) => {
   }
 });
 
-
 app.get('/users/:id', async (req, res) => {
   const userId = req.params.id;
   try {
-    const [rows] = await pool.query('SELECT id, name, email, created_at FROM users WHERE id = ?', [userId]);
+    const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [userId]);
     if (rows.length === 0) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -98,74 +89,70 @@ app.get('/users/:id', async (req, res) => {
   }
 });
 
-
 app.post('/users', async (req, res) => {
   const { name, email, password } = req.body;
 
-  
+
   if (!name || !email || !password) {
     return res.status(400).json({ message: 'Missing required fields: name, email, password' });
   }
 
   try {
-    
+
     const [existingUsers] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
     if (existingUsers.length > 0) {
-        return res.status(409).json({ message: 'Email already in use' }); 
+      return res.status(409).json({ message: 'Email already in use' });
     }
 
-    
-    const hashedPassword = hashPassword(password);
+    const hashedPassword = hashSync(password, 5);
 
-    
     const [result] = await pool.query(
       'INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)',
       [name, email, hashedPassword]
     );
 
-    
-    res.status(201).json({ 
-        message: 'User created successfully',
-        userId: result.insertId,
-        name: name,
-        email: email
+
+    res.status(201).json({
+      message: 'User created successfully',
+      userId: result.insertId,
+      name: name,
+      email: email
     });
   } catch (error) {
     console.error("Error creating user:", error);
-    
+
     if (error.code === 'ER_DUP_ENTRY') {
-         return res.status(409).json({ message: 'Email already in use' });
+      return res.status(409).json({ message: 'Email already in use' });
     }
     res.status(500).json({ message: 'Error creating user', error: error.message });
   }
 });
 
-
 app.put('/users/:id', async (req, res) => {
   const userId = req.params.id;
   const { name, email, password } = req.body;
 
-  
+
   if (!name && !email && !password) {
     return res.status(400).json({ message: 'No fields provided for update' });
   }
 
   try {
-    
+
     const [users] = await pool.query('SELECT id FROM users WHERE id = ?', [userId]);
     if (users.length === 0) {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    
+
     if (email) {
-        const [existingEmails] = await pool.query('SELECT id FROM users WHERE email = ? AND id != ?', [email, userId]);
-        if (existingEmails.length > 0) {
-            return res.status(409).json({ message: 'Email already in use by another user' });
-        }
+      const [existingEmails] = await pool.query('SELECT id FROM users WHERE email = ? AND id != ?', [email, userId]);
+      if (existingEmails.length > 0) {
+        return res.status(409).json({ message: 'Email already in use by another user' });
+      }
     }
 
-    
+
     let query = 'UPDATE users SET ';
     const params = [];
     if (name) {
@@ -178,28 +165,28 @@ app.put('/users/:id', async (req, res) => {
     }
     if (password) {
       query += 'password_hash = ?, ';
-      params.push(hashPassword(password)); 
+      params.push(hashPassword(password));
     }
 
-    
+
     query = query.slice(0, -2);
     query += ' WHERE id = ?';
     params.push(userId);
 
-    
+
     const [result] = await pool.query(query, params);
 
     if (result.affectedRows === 0) {
-        
-         return res.status(404).json({ message: 'User not found or no changes made' });
+
+      return res.status(404).json({ message: 'User not found or no changes made' });
     }
 
     res.json({ message: 'User updated successfully', id: userId });
 
   } catch (error) {
     console.error(`Error updating user ${userId}:`, error);
-     if (error.code === 'ER_DUP_ENTRY') {
-         return res.status(409).json({ message: 'Email already in use by another user' });
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ message: 'Email already in use by another user' });
     }
     res.status(500).json({ message: 'Error updating user', error: error.message });
   }
@@ -215,15 +202,12 @@ app.delete('/users/:id', async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    res.status(200).json({ message: 'User deleted successfully', id: userId }); 
+    res.status(200).json({ message: 'User deleted successfully', id: userId });
   } catch (error) {
     console.error(`Error deleting user ${userId}:`, error);
     res.status(500).json({ message: 'Error deleting user', error: error.message });
   }
 });
-
-
-
 
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
@@ -233,25 +217,19 @@ app.post('/login', async (req, res) => {
   }
 
   try {
-    
+
     const [users] = await pool.query('SELECT id, name, email, password_hash FROM users WHERE email = ?', [email]);
 
     if (users.length === 0) {
-      return res.status(401).json({ message: 'Invalid credentials' }); 
+      return res.status(401).json({ message: 'Invalid credentials' });
     }
 
     const user = users[0];
 
-    
-    const hashedInputPassword = hashPassword(password);
-
-    if (hashedInputPassword !== user.password_hash) {
-      return res.status(401).json({ message: 'Invalid credentials' }); 
+    if (!compareSync(password, user.password_hash)) {
+      return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    
-    
-    
     res.json({
       message: 'Login successful',
       user: {
@@ -259,7 +237,7 @@ app.post('/login', async (req, res) => {
         name: user.name,
         email: user.email
       }
-      
+
     });
 
   } catch (error) {
